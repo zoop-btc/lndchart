@@ -1,0 +1,182 @@
+{{ $checksum := include (print $.Template.BasePath "/configmap.yaml") . | sha256sum }}
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: {{ include "lnd.fullname" . }}
+  labels:
+    {{- include "lnd.labels" . | nindent 4 }}
+    {{- if .Values.kubemonkey.enabled }}
+    kube-monkey/enabled: enabled
+    kube-monkey/identifier: {{ .Chart.Name }}
+    kube-monkey/kill-mode: fixed
+    kube-monkey/kill-value: "1"
+    kube-monkey/mtbf: "8"
+    {{- end }}
+    {{- if .Values.labels }}
+    {{- include "common.tplvalues.render" (dict "value" .Values.labels "context" $) | nindent 4 }}
+    {{- end }}
+spec:
+  serviceName: {{ include "lnd.fullname" . }}
+  selector:
+    matchLabels:
+      {{- include "lnd.selectorLabels" . | nindent 6 }}
+  template:
+    metadata:
+      annotations:
+        checksum/config: {{ $checksum }}
+      {{- with .Values.podAnnotations }}
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      labels:
+        {{- include "lnd.selectorLabels" . | nindent 8 }}
+        allow-to-bitcoind: "true"
+        {{- if .Values.kubemonkey.enabled }}
+        kube-monkey/enabled: enabled
+        kube-monkey/identifier: {{ .Chart.Name }}
+        {{- end }}
+        {{- if .Values.podLabels }}
+        {{- include "common.tplvalues.render" (dict "value" .Values.podLabels "context" $) | nindent 8 }}
+        {{- end }}
+    spec:
+      serviceAccountName: {{ include "lnd.serviceAccountName" . }}
+      terminationGracePeriodSeconds: {{ .Values.terminationGracePeriodSeconds }}
+      initContainers:
+        - name: copy-lnd-config
+          image: "{{ .Values.image.repository }}:{{ .Values.image.tag | default .Chart.AppVersion }}"
+          command:
+          - 'sh'
+          - '-c'
+          - |
+            cat <<EOF > /root/.lnd/lnd.conf
+            bitcoind.rpcpass=$(cat /rpcpassword/password)
+            $(cat /configmap/lnd.conf)
+            EOF
+          volumeMounts:
+            - name: configmap
+              mountPath: /configmap
+            - name: config
+              mountPath: /root/.lnd/
+            - name: rpcpassword
+              mountPath: /rpcpassword
+      containers:
+        - name: {{ .Chart.Name }}
+          image: "{{ .Values.image.repository }}:{{ .Values.image.tag | default .Chart.AppVersion }}"
+          command: [ '/init-wallet-k8s.sh' ]
+          env:
+            - name: GEN_SEED
+              value: {{ if .Values.autoGenerateSeed.enabled }}'1'{{ else }}'0'{{ end }}
+            - name: WALLET_SECRET_NAME
+              value: {{ include "lnd.fullname" . }}-pass
+            - name: WALLET_DIR
+              value: /root/.lnd/data/chain/bitcoin/{{ .Values.global.network }}
+            - name: CERT_DIR
+              value: /root/.lnd
+            - name: UPLOAD_RPC_SECRETS
+              value: {{ if .Values.uploadSecrets.enabled }}'1'{{ else }}'0'{{ end }}
+            - name: UPLOAD_PUBKEY_SECRETS
+              value: {{ if .Values.uploadSecrets.enabled }}'1'{{ else }}'0'{{ end }}
+            - name: RPC_SECRETS_NAME
+              value: {{ include "lnd.fullname" . }}-credentials
+            - name: RPC_SECRETS_NAMESPACE
+              value: {{ .Release.Namespace }}
+            - name: PUBKEY_SECRETS_NAME
+              value: {{ include "lnd.fullname" . }}-pubkey
+            - name: PUBKEY_SECRETS_NAMESPACE
+              value: {{ .Release.Namespace }}
+            - name: WALLET_SECRET_NAMESPACE
+              value: {{ .Release.Namespace }}
+            - name: NETWORK
+              value: {{ .Values.global.network }}
+          ports:
+            - name: rpc
+              containerPort: {{ .Values.apiService.ports.rpc }}
+            - name: p2p
+              containerPort: {{ .Values.p2pService.port }}
+            - name: rest
+              containerPort: {{ .Values.apiService.ports.rest }}
+          volumeMounts:
+            - name: tor-cookie-auth
+              mountPath: /var/lib/tor/auth
+            - name: lnd-storage
+              mountPath: /root/.lnd
+            - name: config
+              mountPath: /root/.lnd/lnd.conf
+              subPath: lnd.conf
+            - name: lndinit
+              mountPath: /init-wallet-k8s.sh
+              subPath: init-wallet-k8s.sh
+          readinessProbe:
+            exec:
+              command:
+              - sh
+              - -c
+              - "lncli -n {{ $.Values.global.network}} state | grep -q SERVER_ACTIVE"
+            periodSeconds: 10
+            timeoutSeconds: 10
+            failureThreshold: 10
+          livenessProbe:
+            exec:
+              command:
+              - sh
+              - -c
+              - "lncli -n {{ $.Values.global.network}} state | grep -q SERVER_ACTIVE"
+            periodSeconds: 10
+            timeoutSeconds: 10
+            failureThreshold: 10
+            initialDelaySeconds: 600
+          resources:
+            {{- toYaml .Values.resources | nindent 12 }}
+        - name: tor
+          image: osminogin/tor-simple
+          securityContext:
+            runAsUser: 100
+          command: ['/bin/sh']
+          volumeMounts:
+          - name: tor-cookie-auth
+            mountPath: /var/lib/tor/auth
+          args:
+          - '-c'
+          - |
+            sed 's/SocksPort 0.0.0.0:9050/SocksPort 127.0.0.1:9050/g' /etc/tor/torrc > ~/torrc
+            cat <<EOF > ~/torrc
+            ControlPort 9051
+            CookieAuthentication 1
+            CookieAuthFile /var/lib/tor/auth/cookie
+            CookieAuthFileGroupReadable 1
+            $(cat ~/torrc)
+            EOF
+            exec tor -f ~/torrc
+      volumes:
+        - name: lndinit
+          configMap:
+            name: {{ printf "%s-lndinit" (include "lnd.fullname" .) }}
+            defaultMode: 0777
+        - name: config
+          emptyDir: {}
+        - name: rpcpassword
+          secret:
+            secretName: {{ .Values.bitcoindRpcPassSecretName }}
+        - name: configmap
+          configMap:
+            name: {{ include "lnd.fullname" . }}
+        - name: lnd-storage
+        {{- if .Values.persistence.enabled }}
+          persistentVolumeClaim:
+            claimName: {{ .Values.persistence.existingClaim | default (include "lnd.fullname" $) }}
+        {{- else }}
+          emptyDir: {}
+        {{- end }}
+        - name: tor-cookie-auth
+          emptyDir: {}
+      {{- with .Values.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}

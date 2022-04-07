@@ -1,0 +1,86 @@
+global:
+  network: testnet
+
+image:
+  repository: lightninglabs/lndinit
+  tag: v0.1.3-beta-lnd-v0.14.2-beta
+  pullPolicy: IfNotPresent
+
+p2pService:
+  type: LoadBalancer
+  port: 9735
+  staticIP: 111.111.1.1
+  listen: true
+
+extdomain: mydomain.com
+
+apiService:
+  type: ClusterIP
+  ports:
+    rpc: 10009
+    rest: 8080
+
+terminationGracePeriodSeconds: 10
+
+persistence:
+  enabled: true
+
+serviceAccount:
+  create: true
+
+configmap:
+  customValues:
+    - bitcoin.testnet=true
+    - bitcoind.rpchost=bitcoind.bitcoin.svc.cluster.local:18332
+    - bitcoind.zmqpubrawblock=tcp://bitcoind.bitcoin.svc.cluster.local:28332
+    - bitcoind.zmqpubrawtx=tcp://bitcoind.bitcoin.svc.cluster.local:28333
+    - minchansize=50000
+    - db.bolt.auto-compact=true
+
+resources:
+  requests:
+    cpu: 100m
+  limits:
+    cpu: 1000m
+
+loop:
+  args: "--network=testnet"
+  enabled: false
+lndmon:
+  enabled: false
+rbac:
+  create: true
+
+walletPassword: lndtestflight
+
+autoGenerateSeed:
+  enabled: true
+uploadSecrets:
+  enabled: true
+
+lndGeneralConfig:
+  - restlisten=0.0.0.0:8080
+  - rpclisten=0.0.0.0:10009
+  - prometheus.listen=0.0.0.0:9092
+  - bitcoin.active=true
+  - bitcoin.node=bitcoind
+  - bitcoind.rpcuser=rpcuser
+  - bitcoind.zmqpubrawblock=tcp://bitcoind:28332
+  - bitcoind.zmqpubrawtx=tcp://bitcoind:28333
+  - tlsextradomain=lnd
+  - accept-keysend=1
+  - allow-circular-route=1
+  - sync-freelist=1
+  - stagger-initial-reconnect=1
+  - protocol.wumbo-channels=1
+  - maxchansize=500000000
+  - bitcoin.timelockdelta=60
+  - default-remote-max-htlcs=50
+  - debuglevel=debug
+  - prometheus.enable=1
+  - gc-canceled-invoices-on-the-fly=true
+  - gc-canceled-invoices-on-startup=true
+  - protocol.no-anchors=true
+  - tor.active=true
+  - tor.v3=true
+  - tor.skip-proxy-for-clearnet-targets=true
