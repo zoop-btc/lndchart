@@ -104,7 +104,7 @@ data:
       lndinit -v wait-ready \
     && lncli --network "${NETWORK}" --rpcserver "${RPC_SERVER}" \
     --tlscertpath "${CERT_DIR}/tls.cert" \
-    getinfo | jq -r .identity_pubkey \
+    getinfo | jq -j .identity_pubkey \
     | lndinit -v store-secret \
     --overwrite \
     --target=k8s \
